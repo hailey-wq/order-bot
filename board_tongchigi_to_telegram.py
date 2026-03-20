@@ -177,12 +177,23 @@ def optimize_orders(
 # GOOGLE SHEETS
 # =========================
 def build_sheets_service():
-    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
-    if not service_account_file:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_FILE env var is missing.")
+    if "GOOGLE_JSON" in os.environ and os.environ["GOOGLE_JSON"].strip():
+        info = json.loads(os.environ["GOOGLE_JSON"])
+        creds = service_account.Credentials.from_service_account_info(
+            info,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        )
+    else:
+        service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+        if not service_account_file:
+            raise RuntimeError("GOOGLE_JSON or GOOGLE_SERVICE_ACCOUNT_FILE env var is missing.")
 
-    creds = Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
+        creds = service_account.Credentials.from_service_account_file(
+            service_account_file,
+            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+        )
+
+    return build("sheets", "v4", credentials=creds)
 
 
 
