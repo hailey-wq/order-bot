@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 import json
-
-import html
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,20 +11,9 @@ import requests
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-
 # =========================
 # FIXED USER CONFIG
 # =========================
-# Spreadsheet IDs provided by user
-# Both tabs are named BOARD.
-# Layout inferred from screenshot:
-#   B2      = date
-#   B6:C... = buy orders  (price/MOC, qty)
-#   E6:F... = sell orders (price/MOC, qty)
-#
-# The ranges intentionally go down to row 100 so the sheet can grow
-# without changing the script.
-
 SOURCES = [
     {
         "name": "YJ",
@@ -35,6 +22,8 @@ SOURCES = [
             "date": "BOARD!B2",
             "buy": "BOARD!B6:C100",
             "sell": "BOARD!E6:F100",
+            "moc_buy": None,
+            "moc_sell": None,
         },
     },
     {
@@ -44,6 +33,8 @@ SOURCES = [
             "date": "BOARD!B2",
             "buy": "BOARD!B6:C100",
             "sell": "BOARD!E6:F100",
+            "moc_buy": None,
+            "moc_sell": None,
         },
     },
 ]
@@ -89,6 +80,21 @@ def optimize_orders(
     moc_buy_qty: int = 0,
     moc_sell_qty: int = 0,
 ) -> Dict[str, Any]:
+    """
+    MOC 포함 통합 퉁치기.
+
+    핵심 아이디어:
+    - MOC BUY는 매우 높은 가격의 매수로 간주
+    - MOC SELL은 매우 낮은 가격의 매도로 간주
+    - 그 상태에서 기존 퉁치기 로직을 그대로 적용
+
+    예시:
+    - 매도 MOC 300 + 매수 54.13 x 200
+      -> 매도 54.14 x 200 + 매도 MOC 100
+
+    - 매도 MOC 200 + 매수 54.13 x 300
+      -> 매수 54.13 x 100 + 매도 54.14 x 200
+    """
     MOC_BUY_PRICE = 999999.0
     MOC_SELL_PRICE = 0.01
 
@@ -103,12 +109,12 @@ def optimize_orders(
         else:
             price_levels[price]["sell_qty"] += qty
 
-    total_buy_qty = moc_buy_qty
+    total_buy_qty = int(moc_buy_qty or 0)
 
-    if moc_buy_qty > 0:
-        add_price(MOC_BUY_PRICE, moc_buy_qty, True)
-    if moc_sell_qty > 0:
-        add_price(MOC_SELL_PRICE, moc_sell_qty, False)
+    if int(moc_buy_qty or 0) > 0:
+        add_price(MOC_BUY_PRICE, int(moc_buy_qty), True)
+    if int(moc_sell_qty or 0) > 0:
+        add_price(MOC_SELL_PRICE, int(moc_sell_qty), False)
 
     for order in buy_orders:
         add_price(float(order["price"]), int(order["qty"]), True)
@@ -145,7 +151,9 @@ def optimize_orders(
                 if qty_from_buy > 0:
                     new_buy_orders.append({"price": price, "qty": qty_from_buy})
                 if qty_from_sell > 0:
-                    new_buy_orders.append({"price": round(price - 0.01, 2), "qty": qty_from_sell})
+                    new_buy_orders.append(
+                        {"price": round(price - 0.01, 2), "qty": qty_from_sell}
+                    )
 
         if sell_alloc > 0:
             if price == MOC_SELL_PRICE:
@@ -156,20 +164,26 @@ def optimize_orders(
                 if qty_from_sell > 0:
                     new_sell_orders.append({"price": price, "qty": qty_from_sell})
                 if qty_from_buy > 0:
-                    new_sell_orders.append({"price": round(price + 0.01, 2), "qty": qty_from_buy})
+                    new_sell_orders.append(
+                        {"price": round(price + 0.01, 2), "qty": qty_from_buy}
+                    )
 
     def aggregate_orders(orders: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         aggregated: Dict[float, int] = {}
         for order in orders:
             p = float(order["price"])
             aggregated[p] = aggregated.get(p, 0) + int(order["qty"])
-        return [{"price": p, "qty": q} for p, q in aggregated.items()]
+        return [
+            {"price": p, "qty": q}
+            for p, q in sorted(aggregated.items())
+            if q > 0
+        ]
 
     return {
         "buy_orders": aggregate_orders(new_buy_orders),
         "sell_orders": aggregate_orders(new_sell_orders),
-        "moc_buy_qty": new_moc_buy,
-        "moc_sell_qty": new_moc_sell,
+        "moc_buy_qty": int(new_moc_buy),
+        "moc_sell_qty": int(new_moc_sell),
     }
 
 
@@ -177,23 +191,24 @@ def optimize_orders(
 # GOOGLE SHEETS
 # =========================
 def build_sheets_service():
-    if "GOOGLE_JSON" in os.environ and os.environ["GOOGLE_JSON"].strip():
+    if os.environ.get("GOOGLE_JSON", "").strip():
         info = json.loads(os.environ["GOOGLE_JSON"])
         creds = service_account.Credentials.from_service_account_info(
             info,
-            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            scopes=SCOPES,
         )
     else:
-        service_account_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+        service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
         if not service_account_file:
-            raise RuntimeError("GOOGLE_JSON or GOOGLE_SERVICE_ACCOUNT_FILE env var is missing.")
-
+            raise RuntimeError(
+                "GOOGLE_JSON or GOOGLE_SERVICE_ACCOUNT_FILE env var is missing."
+            )
         creds = service_account.Credentials.from_service_account_file(
             service_account_file,
-            scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            scopes=SCOPES,
         )
 
-    return build("sheets", "v4", credentials=creds)
+    return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
 
@@ -361,13 +376,10 @@ def send_telegram_message(text: str) -> None:
             json={
                 "chat_id": chat_id,
                 "text": part,
-                "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             },
             timeout=30,
         )
-
-
         resp.raise_for_status()
         payload = resp.json()
         if not payload.get("ok"):
@@ -377,21 +389,19 @@ def send_telegram_message(text: str) -> None:
 # =========================
 # FORMAT
 # =========================
-def format_orders_block(title: str, orders: List[Dict[str, Any]], moc_qty: int = 0) -> str:
-    lines = [f"<b>{html.escape(title)}</b>"]
-
-    if int(moc_qty or 0) <= 0 and not orders:
-        lines.append("없음")
-        return "\n".join(lines)
-
-    if int(moc_qty or 0) > 0:
-        lines.append(f"MOC × {int(moc_qty):,}")
-
-    sorted_orders = sorted(orders, key=lambda x: float(x["price"]), reverse=True)
+def format_orders_plain(
+    orders: List[Dict[str, Any]],
+    moc_qty: int = 0,
+) -> List[str]:
+    lines: List[str] = []
+    sorted_orders = sorted(orders, key=lambda x: float(x["price"]))
     for order in sorted_orders:
-        lines.append(f"{float(order['price']):,.2f} × {int(order['qty']):,}")
-
-    return "\n".join(lines)
+        lines.append(f"{float(order['price']):.2f} × {int(order['qty'])}")
+    if int(moc_qty or 0) > 0:
+        lines.append(f"MOC × {int(moc_qty)}")
+    if not lines:
+        lines.append("-")
+    return lines
 
 
 
@@ -400,9 +410,6 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
     date_line = dates[0] if dates else "날짜 없음"
     all_same_date = len(set(dates)) <= 1 if dates else True
 
-    buy_orders = sorted(optimized.get("buy_orders", []), key=lambda x: x["price"])
-    sell_orders = sorted(optimized.get("sell_orders", []), key=lambda x: x["price"])
-
     lines = [
         "통합 주문표",
         str(date_line),
@@ -410,38 +417,35 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         "📌 매수",
     ]
 
-    if buy_orders:
-        for row in buy_orders:
-            lines.append(f'{row["price"]:.2f} × {row["qty"]}')
-    else:
-        lines.append("-")
+    lines.extend(
+        format_orders_plain(
+            optimized.get("buy_orders", []),
+            int(optimized.get("moc_buy_qty", 0) or 0),
+        )
+    )
 
-    moc_buy_qty = int(optimized.get("moc_buy_qty", 0) or 0)
-    if moc_buy_qty > 0:
-        lines.append(f"MOC × {moc_buy_qty:,}")
+    lines.extend([
+        "",
+        "📌 매도",
+    ])
 
-    lines.extend(["", "📌 매도"])
-
-    if sell_orders:
-        for row in sell_orders:
-            lines.append(f'{row["price"]:.2f} × {row["qty"]}')
-    else:
-        lines.append("-")
-
-    moc_sell_qty = int(optimized.get("moc_sell_qty", 0) or 0)
-    if moc_sell_qty > 0:
-        lines.append(f"MOC × {moc_sell_qty:,}")
+    lines.extend(
+        format_orders_plain(
+            optimized.get("sell_orders", []),
+            int(optimized.get("moc_sell_qty", 0) or 0),
+        )
+    )
 
     lines.append("")
 
     for item in inputs:
         buy_text = f"buy {len(item.buy_orders)}건"
         if item.moc_buy_qty:
-            buy_text += f" + MOC {item.moc_buy_qty:,}"
+            buy_text += f" + MOC {item.moc_buy_qty}"
 
         sell_text = f"sell {len(item.sell_orders)}건"
         if item.moc_sell_qty:
-            sell_text += f" + MOC {item.moc_sell_qty:,}"
+            sell_text += f" + MOC {item.moc_sell_qty}"
 
         lines.append(f"{item.source_name} | {buy_text} | {sell_text}")
 
