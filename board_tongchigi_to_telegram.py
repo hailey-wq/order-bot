@@ -367,8 +367,6 @@ def send_telegram_message(text: str) -> None:
             timeout=30,
         )
 
-        print("status_code:", resp.status_code)
-        print("response_text:", resp.text)
 
         resp.raise_for_status()
         payload = resp.json()
