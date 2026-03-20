@@ -1,14 +1,7 @@
+from __future__ import annotations
 
 import os
 import json
-from google.oauth2 import service_account
-
-json_data = os.environ["GOOGLE_JSON"]
-info = json.loads(json_data)
-
-creds = service_account.Credentials.from_service_account_info(info)
-
-from __future__ import annotations
 
 import html
 import re
@@ -17,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
-from google.oauth2.service_account import Credentials
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
 
