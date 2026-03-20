@@ -17,7 +17,7 @@ from googleapiclient.discovery import build
 SOURCES = [
     {
         "name": "YJ",
-        "spreadsheet_id": "14KtlVcmwMWrkoW3pJNzu5whZ-jKQXt34fFgdPSA20Bo",
+        "spreadsheet_id": "1_LdL5U_zIcVG1bv8MJmVgKsOZq75i-zeNOJioREiT-4",
         "ranges": {
             "date": "BOARD!B2",
             "buy": "BOARD!B6:C100",
