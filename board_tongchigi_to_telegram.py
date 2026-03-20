@@ -1,6 +1,4 @@
-from __future__ import annotations
 
-import html
 import os
 import json
 from google.oauth2 import service_account
@@ -10,6 +8,9 @@ info = json.loads(json_data)
 
 creds = service_account.Credentials.from_service_account_info(info)
 
+from __future__ import annotations
+
+import html
 import re
 from dataclasses import dataclass
 from pathlib import Path
