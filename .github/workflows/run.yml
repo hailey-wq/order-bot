@@ -2,7 +2,7 @@ name: Run Telegram Bot
 
 on:
   schedule:
-    - cron: '5 0 * * 2-6'
+    - cron: '17 0 * * 2-6'
   workflow_dispatch:
 
 jobs:
@@ -16,6 +16,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: requirements_gsheets_telegram.txt
 
       - name: 라이브러리 설치
         run: pip install -r requirements_gsheets_telegram.txt
