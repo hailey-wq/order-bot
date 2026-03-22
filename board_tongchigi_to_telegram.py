@@ -20,6 +20,7 @@ SOURCES = [
         "spreadsheet_id": "1_LdL5U_zIcVG1bv8MJmVgKsOZq75i-zeNOJioREiT-4",
         "ranges": {
             "date": "BOARD!B2",
+            "mode": "BOARD!T21",   # <- 여기만 실제 mode 셀로 바꾸기
             "buy": "BOARD!B6:C100",
             "sell": "BOARD!E6:F100",
             "moc_buy": None,
@@ -31,6 +32,7 @@ SOURCES = [
         "spreadsheet_id": "1Edgcu4-T6aKG1jiNdKU3GMnzsToxKmJawsO8YGdVFTo",
         "ranges": {
             "date": "BOARD!B2",
+            "mode": None,
             "buy": "BOARD!B6:C100",
             "sell": "BOARD!E6:F100",
             "moc_buy": None,
@@ -51,6 +53,7 @@ class SheetOrders:
     sell_orders: List[Dict[str, Any]]
     moc_buy_qty: int = 0
     moc_sell_qty: int = 0
+    source_mode: str = ""
 
 
 # =========================
@@ -320,6 +323,8 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
         return []
 
     trade_date = cell_to_scalar(get_rows(ranges_cfg.get("date")), default="")
+    source_mode = cell_to_scalar(get_rows(ranges_cfg.get("mode")), default="").strip().upper()
+
     buy_orders, inline_moc_buy = parse_order_rows(get_rows(ranges_cfg.get("buy")))
     sell_orders, inline_moc_sell = parse_order_rows(get_rows(ranges_cfg.get("sell")))
 
@@ -333,6 +338,7 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
         sell_orders=sell_orders,
         moc_buy_qty=moc_buy_qty,
         moc_sell_qty=moc_sell_qty,
+        source_mode=source_mode,
     )
 
 
@@ -403,12 +409,71 @@ def format_orders_plain(
         lines.append("-")
     return lines
 
+def build_range_order_lines(
+    buy_orders: List[Dict[str, Any]],
+    sell_orders: List[Dict[str, Any]],
+) -> List[str]:
+    buy_orders = sorted(
+        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in buy_orders],
+        key=lambda x: x["price"],
+    )
+    sell_orders = sorted(
+        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in sell_orders],
+        key=lambda x: x["price"],
+    )
+
+    lines: List[str] = []
+
+    # 매수 구간: 낮을수록 더 많이 매수
+    if buy_orders:
+        remaining_buy = sum(x["qty"] for x in buy_orders)
+        first_price = buy_orders[0]["price"]
+        lines.append(f"{first_price:.2f} 이하 : {remaining_buy:,} 매수")
+
+        for i in range(1, len(buy_orders)):
+            remaining_buy -= buy_orders[i - 1]["qty"]
+            lower = round(buy_orders[i - 1]["price"] + 0.01, 2)
+            upper = buy_orders[i]["price"]
+            lines.append(f"{lower:.2f} ~ {upper:.2f} : {remaining_buy:,} 매수")
+
+    # 매수/매도 사이 한 줄 띄우기
+    if buy_orders and sell_orders:
+        lines.append("")
+
+    # 매도 구간: 높을수록 더 많이 매도
+    if sell_orders:
+        cumulative_sell = 0
+        for i, order in enumerate(sell_orders):
+            cumulative_sell += order["qty"]
+            price = order["price"]
+
+            if i < len(sell_orders) - 1:
+                upper = round(sell_orders[i + 1]["price"] - 0.01, 2)
+                lines.append(f"{price:.2f} ~ {upper:.2f} : {cumulative_sell:,} 매도")
+            else:
+                lines.append(f"{price:.2f} 이상 : {cumulative_sell:,} 매도")
+
+    return lines
+
+
+def format_source_display_name(item: SheetOrders) -> str:
+    mode = (item.source_mode or "").strip().upper()
+    if item.source_name == "YJ" and mode in {"SP", "SH"}:
+        return f"{item.source_name} ({mode})"
+    return item.source_name
+
 
 
 def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
     dates = [item.trade_date for item in inputs if item.trade_date]
     date_line = dates[0] if dates else "날짜 없음"
     all_same_date = len(set(dates)) <= 1 if dates else True
+
+    buy_orders = sorted(optimized.get("buy_orders", []), key=lambda x: x["price"])
+    sell_orders = sorted(optimized.get("sell_orders", []), key=lambda x: x["price"])
+
+    moc_buy_qty = int(optimized.get("moc_buy_qty", 0) or 0)
+    moc_sell_qty = int(optimized.get("moc_sell_qty", 0) or 0)
 
     lines = [
         "통합 주문표",
@@ -417,37 +482,46 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         "📌 매수",
     ]
 
-    lines.extend(
-        format_orders_plain(
-            optimized.get("buy_orders", []),
-            int(optimized.get("moc_buy_qty", 0) or 0),
-        )
-    )
+    if buy_orders:
+        for row in buy_orders:
+            lines.append(f'{row["price"]:.2f} × {row["qty"]:,}')
+    else:
+        lines.append("-")
 
-    lines.extend([
-        "",
-        "📌 매도",
-    ])
+    lines.extend(["", "📌 매도"])
 
-    lines.extend(
-        format_orders_plain(
-            optimized.get("sell_orders", []),
-            int(optimized.get("moc_sell_qty", 0) or 0),
-        )
-    )
+    if sell_orders:
+        for row in sell_orders:
+            lines.append(f'{row["price"]:.2f} × {row["qty"]:,}')
+    else:
+        lines.append("-")
 
     lines.append("")
 
     for item in inputs:
         buy_text = f"buy {len(item.buy_orders)}건"
         if item.moc_buy_qty:
-            buy_text += f" + MOC {item.moc_buy_qty}"
+            buy_text += f" + MOC {item.moc_buy_qty:,}"
 
         sell_text = f"sell {len(item.sell_orders)}건"
         if item.moc_sell_qty:
-            sell_text += f" + MOC {item.moc_sell_qty}"
+            sell_text += f" + MOC {item.moc_sell_qty:,}"
 
-        lines.append(f"{item.source_name} | {buy_text} | {sell_text}")
+        display_name = format_source_display_name(item)
+        lines.append(f"{display_name} | {buy_text} | {sell_text}")
+
+    range_lines = build_range_order_lines(buy_orders, sell_orders)
+    if range_lines:
+        lines.extend(["", "📊 구간별 1회 주문"])
+        lines.extend(range_lines)
+
+    # MOC는 여기서만 따로 표시
+    if moc_sell_qty > 0:
+        lines.extend(["", "🕘 종가정리", f"MOC 매도 {moc_sell_qty:,}주"])
+
+    # 필요하면 나중에 예외 처리용으로 살릴 수 있음
+    # if moc_buy_qty > 0:
+    #     lines.extend(["", f"⚠️ 예외: MOC 매수 {moc_buy_qty:,}주"])
 
     if not all_same_date:
         lines.extend(["", "⚠️ 시트 날짜가 서로 다름"])
