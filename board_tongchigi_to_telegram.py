@@ -41,7 +41,7 @@ SOURCES = [
     },
 ]
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 NUMERIC_CLEANER = re.compile(r"[^0-9.\-]")
 
 
@@ -328,6 +328,7 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
     buy_orders, inline_moc_buy = parse_order_rows(get_rows(ranges_cfg.get("buy")))
     sell_orders, inline_moc_sell = parse_order_rows(get_rows(ranges_cfg.get("sell")))
 
+
     moc_buy_qty = cell_to_int(get_rows(ranges_cfg.get("moc_buy")), default=0) + inline_moc_buy
     moc_sell_qty = cell_to_int(get_rows(ranges_cfg.get("moc_sell")), default=0) + inline_moc_sell
 
@@ -340,6 +341,8 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
         moc_sell_qty=moc_sell_qty,
         source_mode=source_mode,
     )
+
+
 
 
 # =========================
@@ -390,6 +393,68 @@ def send_telegram_message(text: str) -> None:
         payload = resp.json()
         if not payload.get("ok"):
             raise RuntimeError(f"Telegram sendMessage failed: {payload}")
+
+
+
+
+# =========================
+# 구글시트
+# =========================
+
+OUTPUT_SPREADSHEET_ID = "1Pt7k3F5lTMfwQfvDW7VA3MBGFQjigkwmInYxFLTVpZE"
+OUTPUT_SHEET_NAME = "Order"
+
+
+def clear_and_write_order_sheet(
+    service,
+    spreadsheet_id: str,
+    sheet_name: str,
+    buy_orders: List[Dict[str, Any]],
+    sell_orders: List[Dict[str, Any]],
+    moc_buy_qty: int = 0,
+    moc_sell_qty: int = 0,
+):
+    buy_orders = sorted(
+        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in buy_orders],
+        key=lambda x: x["price"],
+    )
+    sell_orders = sorted(
+        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in sell_orders],
+        key=lambda x: x["price"],
+    )
+
+    rows: List[List[Any]] = []
+
+    # 매수 먼저
+    for row in buy_orders:
+        rows.append(["매수", "", f'{row["price"]:.2f}', row["qty"]])
+
+    if int(moc_buy_qty or 0) > 0:
+        rows.append(["매수", "MOC", "", int(moc_buy_qty)])
+
+    # 그 다음 매도
+    for row in sell_orders:
+        rows.append(["매도", "", f'{row["price"]:.2f}', row["qty"]])
+
+    if int(moc_sell_qty or 0) > 0:
+        rows.append(["매도", "MOC", "", int(moc_sell_qty)])
+
+    # 기존 영역 비우기
+    service.spreadsheets().values().batchClear(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "ranges": [f"{sheet_name}!L4:O1000"]
+        },
+    ).execute()
+
+    # 새 값 쓰기
+    if rows:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!L4:O{3 + len(rows)}",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
+        ).execute()
 
 
 # =========================
@@ -529,9 +594,13 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+
+
+
 # =========================
 # MAIN
 # =========================
+
 def main() -> None:
     load_dotenv_if_present()
     service = build_sheets_service()
@@ -560,6 +629,16 @@ def main() -> None:
     message = build_message(inputs, optimized)
     send_telegram_message(message)
 
+    clear_and_write_order_sheet(
+        service,
+        OUTPUT_SPREADSHEET_ID,
+        OUTPUT_SHEET_NAME,
+        optimized.get("buy_orders", []),
+        optimized.get("sell_orders", []),
+        optimized.get("moc_buy_qty", 0),
+        optimized.get("moc_sell_qty", 0),
+    )
+
     print(
         json.dumps(
             {
@@ -577,5 +656,7 @@ def main() -> None:
     )
 
 
+
 if __name__ == "__main__":
     main()
+
