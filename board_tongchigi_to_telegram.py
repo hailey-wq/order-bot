@@ -425,27 +425,38 @@ def clear_and_write_order_sheet(
 
     rows: List[List[Any]] = []
 
+    # K=종목코드, L=매수/매도, M=주문방법, N=가격, O=수량
+
     # 매수 먼저
     for row in buy_orders:
-        rows.append(["매수", "", f'{row["price"]:.2f}', row["qty"]])
+        rows.append(["SOXL", "매수", "", f'{row["price"]:.2f}', row["qty"]])
 
     if int(moc_buy_qty or 0) > 0:
-        rows.append(["매수", "MOC", "", int(moc_buy_qty)])
+        rows.append(["SOXL", "매수", "MOC", "", int(moc_buy_qty)])
 
     # 그 다음 매도
     for row in sell_orders:
-        rows.append(["매도", "", f'{row["price"]:.2f}', row["qty"]])
+        rows.append(["SOXL", "매도", "", f'{row["price"]:.2f}', row["qty"]])
 
     if int(moc_sell_qty or 0) > 0:
-        rows.append(["매도", "MOC", "", int(moc_sell_qty)])
+        rows.append(["SOXL", "매도", "MOC", "", int(moc_sell_qty)])
 
-    # 기존 영역 비우기
+    # 기존 값 전체 초기화
     service.spreadsheets().values().batchClear(
         spreadsheetId=spreadsheet_id,
         body={
-            "ranges": [f"{sheet_name}!L4:O1000"]
+            "ranges": [f"{sheet_name}!K4:O1000"]
         },
     ).execute()
+
+    # 새 값 쓰기
+    if rows:
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{sheet_name}!K4:O{3 + len(rows)}",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
+        ).execute()
 
     # 새 값 쓰기
     if rows:
