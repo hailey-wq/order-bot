@@ -423,31 +423,59 @@ def clear_and_write_order_sheet(
         key=lambda x: x["price"],
     )
 
-    rows: List[List[Any]] = []
-
-    # K=종목코드, L=매수/매도, M=주문방법, N=가격, O=수량
+    kl_rows: List[List[Any]] = []
+    no_rows: List[List[Any]] = []
 
     # 매수 먼저
     for row in buy_orders:
-        rows.append(["SOXL", "매수", "", f'{row["price"]:.2f}', row["qty"]])
+        kl_rows.append(["SOXL", "매수"])
+        no_rows.append([f'{row["price"]:.2f}', row["qty"]])
 
     if int(moc_buy_qty or 0) > 0:
-        rows.append(["SOXL", "매수", "MOC", "", int(moc_buy_qty)])
+        kl_rows.append(["SOXL", "매수"])
+        no_rows.append(["", int(moc_buy_qty)])
 
     # 그 다음 매도
     for row in sell_orders:
-        rows.append(["SOXL", "매도", "", f'{row["price"]:.2f}', row["qty"]])
+        kl_rows.append(["SOXL", "매도"])
+        no_rows.append([f'{row["price"]:.2f}', row["qty"]])
 
     if int(moc_sell_qty or 0) > 0:
-        rows.append(["SOXL", "매도", "MOC", "", int(moc_sell_qty)])
+        kl_rows.append(["SOXL", "매도"])
+        no_rows.append(["", int(moc_sell_qty)])
 
-    # 기존 값 전체 초기화
+    # M열은 건드리지 않음 (시트 수식 유지)
     service.spreadsheets().values().batchClear(
         spreadsheetId=spreadsheet_id,
         body={
-            "ranges": [f"{sheet_name}!K4:O1000"]
+            "ranges": [
+                f"{sheet_name}!K4:L1000",
+                f"{sheet_name}!N4:O1000",
+            ]
         },
     ).execute()
+
+    data = []
+    if kl_rows:
+        data.append({
+            "range": f"{sheet_name}!K4:L{3 + len(kl_rows)}",
+            "values": kl_rows,
+        })
+
+    if no_rows:
+        data.append({
+            "range": f"{sheet_name}!N4:O{3 + len(no_rows)}",
+            "values": no_rows,
+        })
+
+    if data:
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={
+                "valueInputOption": "USER_ENTERED",
+                "data": data,
+            },
+        ).execute()
 
     # 새 값 쓰기
     if rows:
