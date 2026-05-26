@@ -4,6 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -546,6 +547,23 @@ def build_split_order_lines(
     return lines
 
 
+def calculate_order_total(orders: List[Dict[str, Any]]) -> Decimal:
+    """가격 × 수량 합계. MOC처럼 가격이 없는 주문은 포함하지 않음."""
+    total = Decimal("0")
+    for order in orders:
+        price = Decimal(str(order["price"]))
+        qty = Decimal(int(order["qty"]))
+        total += price * qty
+    return total.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def format_dollar_amount(amount: Decimal) -> str:
+    amount_text = f"{amount:,.2f}"
+    if "." in amount_text:
+        amount_text = amount_text.rstrip("0").rstrip(".")
+    return f"${amount_text}"
+
+
 def build_range_order_lines(
     buy_orders: List[Dict[str, Any]],
     sell_orders: List[Dict[str, Any]],
@@ -627,6 +645,11 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
 
     # 매수는 TWAP 먼저, LOC 나중. 홀수는 TWAP에 1주 더 배정.
     lines.extend(build_split_order_lines(buy_orders, first_label="TWAP", second_label="LOC"))
+
+    # 매수 총액은 실제 통합 매수 주문의 가격 × 수량 합계.
+    if buy_orders:
+        buy_total = calculate_order_total(buy_orders)
+        lines.extend(["", f"매수 총 {format_dollar_amount(buy_total)}"])
 
     lines.extend(["", "📌 매도"])
 
