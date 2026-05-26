@@ -406,6 +406,64 @@ OUTPUT_SPREADSHEET_ID = "1Pt7k3F5lTMfwQfvDW7VA3MBGFQjigkwmInYxFLTVpZE"
 OUTPUT_SHEET_NAME = "Order"
 
 
+def build_sheet_order_rows(
+    buy_orders: List[Dict[str, Any]],
+    sell_orders: List[Dict[str, Any]],
+    moc_buy_qty: int = 0,
+    moc_sell_qty: int = 0,
+) -> List[List[Any]]:
+    """
+    구글시트 Order 탭 K:O 출력용 행 생성.
+
+    K: 종목
+    L: 매수/매도
+    M: TWAP/VWAP/LOC/MOC
+    N: 가격
+    O: 주문량
+    """
+    rows: List[List[Any]] = []
+
+    def add_split_rows(
+        side: str,
+        orders: List[Dict[str, Any]],
+        first_label: str,
+        second_label: str = "LOC",
+    ) -> None:
+        normalized = sorted(
+            [{"price": float(x["price"]), "qty": int(x["qty"])} for x in orders],
+            key=lambda x: x["price"],
+        )
+
+        first_rows: List[List[Any]] = []
+        second_rows: List[List[Any]] = []
+
+        for order in normalized:
+            first_qty, second_qty = split_qty_front_heavy(order["qty"])
+            price_text = f'{order["price"]:.2f}'
+
+            if first_qty > 0:
+                first_rows.append(["SOXL", side, first_label, price_text, first_qty])
+            if second_qty > 0:
+                second_rows.append(["SOXL", side, second_label, price_text, second_qty])
+
+        rows.extend(first_rows)
+        rows.extend(second_rows)
+
+    # 매수: TWAP 먼저, LOC 나중. O열 수량도 쪼개진 수량으로 입력.
+    add_split_rows("매수", buy_orders, first_label="TWAP", second_label="LOC")
+
+    if int(moc_buy_qty or 0) > 0:
+        rows.append(["SOXL", "매수", "MOC", "", int(moc_buy_qty)])
+
+    # 매도: VWAP 먼저, LOC 나중. O열 수량도 쪼개진 수량으로 입력.
+    add_split_rows("매도", sell_orders, first_label="VWAP", second_label="LOC")
+
+    if int(moc_sell_qty or 0) > 0:
+        rows.append(["SOXL", "매도", "MOC", "", int(moc_sell_qty)])
+
+    return rows
+
+
 def clear_and_write_order_sheet(
     service,
     spreadsheet_id: str,
@@ -415,69 +473,27 @@ def clear_and_write_order_sheet(
     moc_buy_qty: int = 0,
     moc_sell_qty: int = 0,
 ):
-    buy_orders = sorted(
-        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in buy_orders],
-        key=lambda x: x["price"],
-    )
-    sell_orders = sorted(
-        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in sell_orders],
-        key=lambda x: x["price"],
+    rows = build_sheet_order_rows(
+        buy_orders=buy_orders,
+        sell_orders=sell_orders,
+        moc_buy_qty=moc_buy_qty,
+        moc_sell_qty=moc_sell_qty,
     )
 
-    kl_rows: List[List[Any]] = []
-    no_rows: List[List[Any]] = []
-
-    # 매수 먼저
-    for row in buy_orders:
-        kl_rows.append(["SOXL", "매수"])
-        no_rows.append([f'{row["price"]:.2f}', row["qty"]])
-
-    if int(moc_buy_qty or 0) > 0:
-        kl_rows.append(["SOXL", "매수"])
-        no_rows.append(["", int(moc_buy_qty)])
-
-    # 그 다음 매도
-    for row in sell_orders:
-        kl_rows.append(["SOXL", "매도"])
-        no_rows.append([f'{row["price"]:.2f}', row["qty"]])
-
-    if int(moc_sell_qty or 0) > 0:
-        kl_rows.append(["SOXL", "매도"])
-        no_rows.append(["", int(moc_sell_qty)])
-
-    # M열은 건드리지 않음 (시트 수식 유지)
+    # K:O 전체를 지운 뒤, K4부터 새 주문표를 한 번에 입력.
+    # M열에는 TWAP/VWAP/LOC/MOC, O열에는 분할된 실제 주문량이 들어감.
     service.spreadsheets().values().batchClear(
         spreadsheetId=spreadsheet_id,
-        body={
-            "ranges": [
-                f"{sheet_name}!K4:L1000",
-                f"{sheet_name}!N4:O1000",
-            ]
-        },
+        body={"ranges": [f"{sheet_name}!K4:O1000"]},
     ).execute()
 
-    data = []
-    if kl_rows:
-        data.append({
-            "range": f"{sheet_name}!K4:L{3 + len(kl_rows)}",
-            "values": kl_rows,
-        })
-
-    if no_rows:
-        data.append({
-            "range": f"{sheet_name}!N4:O{3 + len(no_rows)}",
-            "values": no_rows,
-        })
-
-    if data:
-        service.spreadsheets().values().batchUpdate(
+    if rows:
+        service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            body={
-                "valueInputOption": "USER_ENTERED",
-                "data": data,
-            },
+            range=f"{sheet_name}!K4:O{3 + len(rows)}",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
         ).execute()
-
 
 
 # =========================
