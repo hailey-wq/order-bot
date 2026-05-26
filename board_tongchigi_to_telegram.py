@@ -477,23 +477,6 @@ def clear_and_write_order_sheet(
             },
         ).execute()
 
-    # 새 값 쓰기
-    if rows:
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"{sheet_name}!K4:O{3 + len(rows)}",
-            valueInputOption="USER_ENTERED",
-            body={"values": rows},
-        ).execute()
-
-    # 새 값 쓰기
-    if rows:
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"{sheet_name}!L4:O{3 + len(rows)}",
-            valueInputOption="USER_ENTERED",
-            body={"values": rows},
-        ).execute()
 
 
 # =========================
@@ -506,12 +489,62 @@ def format_orders_plain(
     lines: List[str] = []
     sorted_orders = sorted(orders, key=lambda x: float(x["price"]))
     for order in sorted_orders:
-        lines.append(f"{float(order['price']):.2f} × {int(order['qty'])}")
+        lines.append(f"{float(order['price']):.2f} × {int(order['qty']):,}")
     if int(moc_qty or 0) > 0:
-        lines.append(f"MOC × {int(moc_qty)}")
+        lines.append(f"MOC × {int(moc_qty):,}")
     if not lines:
         lines.append("-")
     return lines
+
+
+def split_qty_front_heavy(qty: int) -> Tuple[int, int]:
+    """
+    홀수 수량은 앞쪽 주문방식에 1주를 더 배정.
+
+    예시:
+    - 20 -> 10 / 10
+    - 41 -> 21 / 20
+    - 255 -> 128 / 127
+    """
+    qty = int(qty or 0)
+    first_qty = (qty + 1) // 2
+    second_qty = qty // 2
+    return first_qty, second_qty
+
+
+def build_split_order_lines(
+    orders: List[Dict[str, Any]],
+    first_label: str,
+    second_label: str = "LOC",
+) -> List[str]:
+    """
+    텔레그램 표시용 주문방식 분리.
+
+    매수: first_label="TWAP", second_label="LOC"
+    매도: first_label="VWAP", second_label="LOC"
+    """
+    sorted_orders = sorted(
+        [{"price": float(x["price"]), "qty": int(x["qty"])} for x in orders],
+        key=lambda x: x["price"],
+    )
+
+    first_lines: List[str] = []
+    second_lines: List[str] = []
+
+    for order in sorted_orders:
+        first_qty, second_qty = split_qty_front_heavy(order["qty"])
+        price_text = f'{order["price"]:.2f}'
+
+        if first_qty > 0:
+            first_lines.append(f"{first_label} {price_text} × {first_qty:,}")
+        if second_qty > 0:
+            second_lines.append(f"{second_label} {price_text} × {second_qty:,}")
+
+    lines = first_lines + second_lines
+    if not lines:
+        lines.append("-")
+    return lines
+
 
 def build_range_order_lines(
     buy_orders: List[Dict[str, Any]],
@@ -573,8 +606,14 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
     date_line = dates[0] if dates else "날짜 없음"
     all_same_date = len(set(dates)) <= 1 if dates else True
 
-    buy_orders = sorted(optimized.get("buy_orders", []), key=lambda x: x["price"])
-    sell_orders = sorted(optimized.get("sell_orders", []), key=lambda x: x["price"])
+    buy_orders = sorted(
+        optimized.get("buy_orders", []),
+        key=lambda x: float(x["price"]),
+    )
+    sell_orders = sorted(
+        optimized.get("sell_orders", []),
+        key=lambda x: float(x["price"]),
+    )
 
     moc_buy_qty = int(optimized.get("moc_buy_qty", 0) or 0)
     moc_sell_qty = int(optimized.get("moc_sell_qty", 0) or 0)
@@ -586,19 +625,13 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         "📌 매수",
     ]
 
-    if buy_orders:
-        for row in buy_orders:
-            lines.append(f'{row["price"]:.2f} × {row["qty"]:,}')
-    else:
-        lines.append("-")
+    # 매수는 TWAP 먼저, LOC 나중. 홀수는 TWAP에 1주 더 배정.
+    lines.extend(build_split_order_lines(buy_orders, first_label="TWAP", second_label="LOC"))
 
     lines.extend(["", "📌 매도"])
 
-    if sell_orders:
-        for row in sell_orders:
-            lines.append(f'{row["price"]:.2f} × {row["qty"]:,}')
-    else:
-        lines.append("-")
+    # 매도는 VWAP 먼저, LOC 나중. 홀수는 VWAP에 1주 더 배정.
+    lines.extend(build_split_order_lines(sell_orders, first_label="VWAP", second_label="LOC"))
 
     lines.append("")
 
@@ -614,6 +647,7 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         display_name = format_source_display_name(item)
         lines.append(f"{display_name} | {buy_text} | {sell_text}")
 
+    # 구간별 1회 주문은 실제 통합 주문 수량 기준으로 그대로 유지.
     range_lines = build_range_order_lines(buy_orders, sell_orders)
     if range_lines:
         lines.extend(["", "📊 구간별 1회 주문"])
@@ -631,7 +665,6 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         lines.extend(["", "⚠️ 시트 날짜가 서로 다름"])
 
     return "\n".join(lines)
-
 
 
 
