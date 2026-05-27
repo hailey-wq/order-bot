@@ -406,15 +406,33 @@ OUTPUT_SPREADSHEET_ID = "1Pt7k3F5lTMfwQfvDW7VA3MBGFQjigkwmInYxFLTVpZE"
 OUTPUT_SHEET_NAME = "Order"
 
 
+def get_output_account() -> str:
+    """Order 탭 J열에 쓸 계좌번호를 .env에서 읽는다."""
+    account = (
+        os.environ.get("KB_ORDER_ACCOUNT", "").strip()
+        or os.environ.get("ORDER_ACCOUNT", "").strip()
+    )
+    account = re.sub(r"\D", "", account)
+    if not account:
+        raise RuntimeError(
+            "KB_ORDER_ACCOUNT env var is missing. "
+            "Add KB_ORDER_ACCOUNT=계좌번호 to your .env file."
+        )
+    return account
+
+
 def build_sheet_order_rows(
     buy_orders: List[Dict[str, Any]],
     sell_orders: List[Dict[str, Any]],
+    account: str,
     moc_buy_qty: int = 0,
     moc_sell_qty: int = 0,
 ) -> List[List[Any]]:
     """
-    구글시트 Order 탭 K:O 출력용 행 생성.
+    구글시트 Order 탭 I:O 출력용 행 생성.
 
+    I: 주문 여부 TRUE
+    J: 계좌번호
     K: 종목
     L: 매수/매도
     M: TWAP/VWAP/LOC/MOC
@@ -422,6 +440,9 @@ def build_sheet_order_rows(
     O: 주문량
     """
     rows: List[List[Any]] = []
+
+    def make_row(side: str, method: str, price_text: str, qty: int) -> List[Any]:
+        return [True, account, "SOXL", side, method, price_text, int(qty)]
 
     def add_split_rows(
         side: str,
@@ -442,24 +463,24 @@ def build_sheet_order_rows(
             price_text = f'{order["price"]:.2f}'
 
             if first_qty > 0:
-                first_rows.append(["SOXL", side, first_label, price_text, first_qty])
+                first_rows.append(make_row(side, first_label, price_text, first_qty))
             if second_qty > 0:
-                second_rows.append(["SOXL", side, second_label, price_text, second_qty])
+                second_rows.append(make_row(side, second_label, price_text, second_qty))
 
         rows.extend(first_rows)
         rows.extend(second_rows)
 
-    # 매수: TWAP 먼저, LOC 나중. O열 수량도 쪼개진 수량으로 입력.
+    # 매수: TWAP 먼저, LOC 나중. 홀수는 TWAP에 1주 더 배정.
     add_split_rows("매수", buy_orders, first_label="TWAP", second_label="LOC")
 
     if int(moc_buy_qty or 0) > 0:
-        rows.append(["SOXL", "매수", "MOC", "", int(moc_buy_qty)])
+        rows.append(make_row("매수", "MOC", "", int(moc_buy_qty)))
 
-    # 매도: VWAP 먼저, LOC 나중. O열 수량도 쪼개진 수량으로 입력.
+    # 매도: VWAP 먼저, LOC 나중. 홀수는 VWAP에 1주 더 배정.
     add_split_rows("매도", sell_orders, first_label="VWAP", second_label="LOC")
 
     if int(moc_sell_qty or 0) > 0:
-        rows.append(["SOXL", "매도", "MOC", "", int(moc_sell_qty)])
+        rows.append(make_row("매도", "MOC", "", int(moc_sell_qty)))
 
     return rows
 
@@ -470,27 +491,29 @@ def clear_and_write_order_sheet(
     sheet_name: str,
     buy_orders: List[Dict[str, Any]],
     sell_orders: List[Dict[str, Any]],
+    account: str,
     moc_buy_qty: int = 0,
     moc_sell_qty: int = 0,
 ):
     rows = build_sheet_order_rows(
         buy_orders=buy_orders,
         sell_orders=sell_orders,
+        account=account,
         moc_buy_qty=moc_buy_qty,
         moc_sell_qty=moc_sell_qty,
     )
 
-    # K:O 전체를 지운 뒤, K4부터 새 주문표를 한 번에 입력.
-    # M열에는 TWAP/VWAP/LOC/MOC, O열에는 분할된 실제 주문량이 들어감.
+    # I:O 전체를 지운 뒤, I4부터 새 주문표를 한 번에 입력.
+    # I/J까지 매번 갱신해야 과거 TRUE/계좌번호가 남아 중복 주문되는 위험을 줄일 수 있음.
     service.spreadsheets().values().batchClear(
         spreadsheetId=spreadsheet_id,
-        body={"ranges": [f"{sheet_name}!K4:O1000"]},
+        body={"ranges": [f"{sheet_name}!I4:O1000"]},
     ).execute()
 
     if rows:
         service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"{sheet_name}!K4:O{3 + len(rows)}",
+            range=f"{sheet_name}!I4:O{3 + len(rows)}",
             valueInputOption="USER_ENTERED",
             body={"values": rows},
         ).execute()
@@ -740,14 +763,17 @@ def main() -> None:
     message = build_message(inputs, optimized)
     send_telegram_message(message)
 
+    output_account = get_output_account()
+
     clear_and_write_order_sheet(
-        service,
-        OUTPUT_SPREADSHEET_ID,
-        OUTPUT_SHEET_NAME,
-        optimized.get("buy_orders", []),
-        optimized.get("sell_orders", []),
-        optimized.get("moc_buy_qty", 0),
-        optimized.get("moc_sell_qty", 0),
+        service=service,
+        spreadsheet_id=OUTPUT_SPREADSHEET_ID,
+        sheet_name=OUTPUT_SHEET_NAME,
+        buy_orders=optimized.get("buy_orders", []),
+        sell_orders=optimized.get("sell_orders", []),
+        account=output_account,
+        moc_buy_qty=optimized.get("moc_buy_qty", 0),
+        moc_sell_qty=optimized.get("moc_sell_qty", 0),
     )
 
     print(
