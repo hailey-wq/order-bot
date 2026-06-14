@@ -25,4 +25,5 @@ jobs:
           GOOGLE_JSON: ${{ secrets.GOOGLE_JSON }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          KB_ORDER_ACCOUNT: ${{ secrets.KB_ORDER_ACCOUNT }}
         run: python board_tongchigi_to_telegram.py
