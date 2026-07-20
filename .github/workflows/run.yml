@@ -3,6 +3,10 @@ name: Run Telegram Bot
 on:
   workflow_dispatch:
 
+concurrency:
+  group: route185-order-bot
+  cancel-in-progress: false  
+
 jobs:
   run:
     runs-on: ubuntu-latest
