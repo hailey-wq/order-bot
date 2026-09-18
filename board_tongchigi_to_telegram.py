@@ -54,7 +54,7 @@ SOURCES = [
             "sell": None,
             "moc_buy": None,
             "moc_sell": None,
-            "sniper": "BOARD!L5:O1000",
+            "sniper": "sniper!L5:O1000",
         },
     },
 ]
