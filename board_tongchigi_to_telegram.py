@@ -1,3 +1,7 @@
+# NOTE: v3_io_safe_sell_moc_only
+# - Order 탭 I:O 전체 갱신
+# - I열 TRUE, J열 계좌번호, K:O 주문내용
+# - MOC 매수 감지 시 중단, MOC 매도만 허용
 from __future__ import annotations
 
 import json
@@ -38,6 +42,19 @@ SOURCES = [
             "sell": "BOARD!E6:F100",
             "moc_buy": None,
             "moc_sell": None,
+        },
+    },
+    {
+        "name": "SNIPER",
+        "spreadsheet_id": "15N-F3WTVHpr0w3iUYxYrZd1eP_ri7Hu2oKhWhaBOJhc",
+        "ranges": {
+            "date": None,
+            "mode": None,
+            "buy": None,
+            "sell": None,
+            "moc_buy": None,
+            "moc_sell": None,
+            "sniper": "BOARD!L5:O1000",
         },
     },
 ]
@@ -274,6 +291,55 @@ def parse_order_rows(rows: List[List[Any]]) -> Tuple[List[Dict[str, Any]], int]:
     return orders, moc_qty
 
 
+def parse_sniper_rows(
+    rows: List[List[Any]],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
+    """Parse sniper rows: side, method, price, quantity (L:O)."""
+    buy_orders: List[Dict[str, Any]] = []
+    sell_orders: List[Dict[str, Any]] = []
+    moc_buy_qty = 0
+    moc_sell_qty = 0
+
+    for row in rows:
+        if not row or len(row) < 4:
+            continue
+
+        side = str(row[0] or "").strip().upper()
+        method = str(row[1] or "").strip().upper()
+        price_raw = row[2]
+        qty_raw = row[3]
+
+        if side not in {"매수", "매도", "BUY", "SELL"} or qty_raw in (None, ""):
+            continue
+
+        try:
+            qty = to_int(qty_raw)
+        except ValueError:
+            continue
+        if qty <= 0:
+            continue
+
+        is_buy = side in {"매수", "BUY"}
+        if method == "MOC":
+            if is_buy:
+                moc_buy_qty += qty
+            else:
+                moc_sell_qty += qty
+            continue
+
+        if price_raw in (None, ""):
+            continue
+        try:
+            price = round(to_float(price_raw), 2)
+        except ValueError:
+            continue
+
+        order = {"price": price, "qty": qty}
+        (buy_orders if is_buy else sell_orders).append(order)
+
+    return buy_orders, sell_orders, moc_buy_qty, moc_sell_qty
+
+
 
 def cell_to_scalar(rows: List[List[Any]], default: str = "") -> str:
     if not rows or not rows[0]:
@@ -325,6 +391,20 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
 
     trade_date = cell_to_scalar(get_rows(ranges_cfg.get("date")), default="")
     source_mode = cell_to_scalar(get_rows(ranges_cfg.get("mode")), default="").strip().upper()
+
+    if ranges_cfg.get("sniper"):
+        buy_orders, sell_orders, moc_buy_qty, moc_sell_qty = parse_sniper_rows(
+            get_rows(ranges_cfg["sniper"])
+        )
+        return SheetOrders(
+            source_name=source_cfg["name"],
+            trade_date=trade_date,
+            buy_orders=buy_orders,
+            sell_orders=sell_orders,
+            moc_buy_qty=moc_buy_qty,
+            moc_sell_qty=moc_sell_qty,
+            source_mode=source_mode,
+        )
 
     buy_orders, inline_moc_buy = parse_order_rows(get_rows(ranges_cfg.get("buy")))
     sell_orders, inline_moc_sell = parse_order_rows(get_rows(ranges_cfg.get("sell")))
@@ -435,7 +515,7 @@ def build_sheet_order_rows(
     J: 계좌번호
     K: 종목
     L: 매수/매도
-    M: TWAP/VWAP/LOC/MOC
+    M: LOC/MOC
     N: 가격
     O: 주문량
     """
@@ -444,40 +524,22 @@ def build_sheet_order_rows(
     def make_row(side: str, method: str, price_text: str, qty: int) -> List[Any]:
         return [True, account, "SOXL", side, method, price_text, int(qty)]
 
-    def add_split_rows(
-        side: str,
-        orders: List[Dict[str, Any]],
-        first_label: str,
-        second_label: str = "LOC",
-    ) -> None:
+    def add_loc_rows(side: str, orders: List[Dict[str, Any]]) -> None:
         normalized = sorted(
             [{"price": float(x["price"]), "qty": int(x["qty"])} for x in orders],
             key=lambda x: x["price"],
         )
 
-        first_rows: List[List[Any]] = []
-        second_rows: List[List[Any]] = []
-
         for order in normalized:
-            first_qty, second_qty = split_qty_front_heavy(order["qty"])
             price_text = f'{order["price"]:.2f}'
+            rows.append(make_row(side, "LOC", price_text, int(order["qty"])))
 
-            if first_qty > 0:
-                first_rows.append(make_row(side, first_label, price_text, first_qty))
-            if second_qty > 0:
-                second_rows.append(make_row(side, second_label, price_text, second_qty))
-
-        rows.extend(first_rows)
-        rows.extend(second_rows)
-
-    # 매수: TWAP 먼저, LOC 나중. 홀수는 TWAP에 1주 더 배정.
-    add_split_rows("매수", buy_orders, first_label="TWAP", second_label="LOC")
+    add_loc_rows("매수", buy_orders)
 
     if int(moc_buy_qty or 0) > 0:
-        rows.append(make_row("매수", "MOC", "", int(moc_buy_qty)))
+        raise RuntimeError("MOC 매수는 현재 운용 기준에서 허용하지 않습니다. 소스 시트를 확인하세요.")
 
-    # 매도: VWAP 먼저, LOC 나중. 홀수는 VWAP에 1주 더 배정.
-    add_split_rows("매도", sell_orders, first_label="VWAP", second_label="LOC")
+    add_loc_rows("매도", sell_orders)
 
     if int(moc_sell_qty or 0) > 0:
         rows.append(make_row("매도", "MOC", "", int(moc_sell_qty)))
@@ -537,50 +599,18 @@ def format_orders_plain(
     return lines
 
 
-def split_qty_front_heavy(qty: int) -> Tuple[int, int]:
-    """
-    홀수 수량은 앞쪽 주문방식에 1주를 더 배정.
-
-    예시:
-    - 20 -> 10 / 10
-    - 41 -> 21 / 20
-    - 255 -> 128 / 127
-    """
-    qty = int(qty or 0)
-    first_qty = (qty + 1) // 2
-    second_qty = qty // 2
-    return first_qty, second_qty
-
-
-def build_split_order_lines(
-    orders: List[Dict[str, Any]],
-    first_label: str,
-    second_label: str = "LOC",
-) -> List[str]:
-    """
-    텔레그램 표시용 주문방식 분리.
-
-    매수: first_label="TWAP", second_label="LOC"
-    매도: first_label="VWAP", second_label="LOC"
-    """
+def build_loc_order_lines(orders: List[Dict[str, Any]]) -> List[str]:
+    """텔레그램 표시용 LOC 주문 목록."""
     sorted_orders = sorted(
         [{"price": float(x["price"]), "qty": int(x["qty"])} for x in orders],
         key=lambda x: x["price"],
     )
 
-    first_lines: List[str] = []
-    second_lines: List[str] = []
-
+    lines: List[str] = []
     for order in sorted_orders:
-        first_qty, second_qty = split_qty_front_heavy(order["qty"])
         price_text = f'{order["price"]:.2f}'
+        lines.append(f"LOC {price_text} × {int(order['qty']):,}")
 
-        if first_qty > 0:
-            first_lines.append(f"{first_label} {price_text} × {first_qty:,}")
-        if second_qty > 0:
-            second_lines.append(f"{second_label} {price_text} × {second_qty:,}")
-
-    lines = first_lines + second_lines
     if not lines:
         lines.append("-")
     return lines
@@ -682,8 +712,7 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
         "📌 매수",
     ]
 
-    # 매수는 TWAP 먼저, LOC 나중. 홀수는 TWAP에 1주 더 배정.
-    lines.extend(build_split_order_lines(buy_orders, first_label="TWAP", second_label="LOC"))
+    lines.extend(build_loc_order_lines(buy_orders))
 
     # 매수 총액은 실제 통합 매수 주문의 가격 × 수량 합계.
     if buy_orders:
@@ -692,8 +721,7 @@ def build_message(inputs: List[SheetOrders], optimized: Dict[str, Any]) -> str:
 
     lines.extend(["", "📌 매도"])
 
-    # 매도는 VWAP 먼저, LOC 나중. 홀수는 VWAP에 1주 더 배정.
-    lines.extend(build_split_order_lines(sell_orders, first_label="VWAP", second_label="LOC"))
+    lines.extend(build_loc_order_lines(sell_orders))
 
     lines.append("")
 
@@ -760,6 +788,15 @@ def main() -> None:
         moc_sell_qty=total_moc_sell,
     )
 
+    if int(optimized.get("moc_buy_qty", 0) or 0) > 0:
+        error_message = (
+            "⚠️ 통합 주문표 생성 중단\n\n"
+            "사유: MOC 매수 수량이 감지되었습니다. 현재 자동주문 운용 기준은 MOC 매도만 허용합니다.\n"
+            f"MOC 매수 수량: {int(optimized.get('moc_buy_qty', 0) or 0):,}주"
+        )
+        send_telegram_message(error_message)
+        raise RuntimeError(error_message)
+
     message = build_message(inputs, optimized)
     send_telegram_message(message)
 
@@ -796,4 +833,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
