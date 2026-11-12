@@ -44,19 +44,6 @@ SOURCES = [
             "moc_sell": None,
         },
     },
-    {
-        "name": "SNIPER",
-        "spreadsheet_id": "15N-F3WTVHpr0w3iUYxYrZd1eP_ri7Hu2oKhWhaBOJhc",
-        "ranges": {
-            "date": None,
-            "mode": None,
-            "buy": None,
-            "sell": None,
-            "moc_buy": None,
-            "moc_sell": None,
-            "sniper": "sniper!L4:O1000",
-        },
-    },
 ]
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -291,56 +278,6 @@ def parse_order_rows(rows: List[List[Any]]) -> Tuple[List[Dict[str, Any]], int]:
     return orders, moc_qty
 
 
-def parse_sniper_rows(
-    rows: List[List[Any]],
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
-    """Parse sniper rows: side, method, price, quantity (L:O)."""
-    buy_orders: List[Dict[str, Any]] = []
-    sell_orders: List[Dict[str, Any]] = []
-    moc_buy_qty = 0
-    moc_sell_qty = 0
-
-    for row in rows:
-        if not row or len(row) < 4:
-            continue
-
-        side = str(row[0] or "").strip().upper()
-        method = str(row[1] or "").strip().upper()
-        price_raw = row[2]
-        qty_raw = row[3]
-
-        if side not in {"매수", "매도", "BUY", "SELL"} or qty_raw in (None, ""):
-            continue
-
-        try:
-            qty = to_int(qty_raw)
-        except ValueError:
-            continue
-        if qty <= 0:
-            continue
-
-        is_buy = side in {"매수", "BUY"}
-        if method == "MOC":
-            if is_buy:
-                moc_buy_qty += qty
-            else:
-                moc_sell_qty += qty
-            continue
-
-        if price_raw in (None, ""):
-            continue
-        try:
-            price = round(to_float(price_raw), 2)
-        except ValueError:
-            continue
-
-        order = {"price": price, "qty": qty}
-        (buy_orders if is_buy else sell_orders).append(order)
-
-    return buy_orders, sell_orders, moc_buy_qty, moc_sell_qty
-
-
-
 def cell_to_scalar(rows: List[List[Any]], default: str = "") -> str:
     if not rows or not rows[0]:
         return default
@@ -391,20 +328,6 @@ def read_source(service, source_cfg: Dict[str, Any]) -> SheetOrders:
 
     trade_date = cell_to_scalar(get_rows(ranges_cfg.get("date")), default="")
     source_mode = cell_to_scalar(get_rows(ranges_cfg.get("mode")), default="").strip().upper()
-
-    if ranges_cfg.get("sniper"):
-        buy_orders, sell_orders, moc_buy_qty, moc_sell_qty = parse_sniper_rows(
-            get_rows(ranges_cfg["sniper"])
-        )
-        return SheetOrders(
-            source_name=source_cfg["name"],
-            trade_date=trade_date,
-            buy_orders=buy_orders,
-            sell_orders=sell_orders,
-            moc_buy_qty=moc_buy_qty,
-            moc_sell_qty=moc_sell_qty,
-            source_mode=source_mode,
-        )
 
     buy_orders, inline_moc_buy = parse_order_rows(get_rows(ranges_cfg.get("buy")))
     sell_orders, inline_moc_sell = parse_order_rows(get_rows(ranges_cfg.get("sell")))
